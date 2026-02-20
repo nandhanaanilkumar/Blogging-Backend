@@ -1,13 +1,23 @@
+const mongoose = require("mongoose");
+
 const PostSchema = new mongoose.Schema({
-  title: String,
-  content: String,
-  author: {
+  userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User"
   },
-  category: String,
-  tags: [String],
-  likes: Number,
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: Date
+
+  text: String,
+  mediaUrl: String,
+
+  isDraft: {
+    type: Boolean,
+    default: false
+  },
+
+  createdAt: {
+    type: Date,
+    default: Date.now
+  }
 });
+
+module.exports = mongoose.model("Post", PostSchema);

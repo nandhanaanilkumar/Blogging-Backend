@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 
 const FollowSchema = new mongoose.Schema({
   followerId: {
@@ -13,3 +14,5 @@ const FollowSchema = new mongoose.Schema({
     default: Date.now
   }
 });
+
+module.exports = mongoose.model("Follow", FollowSchema);
