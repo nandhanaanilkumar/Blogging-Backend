@@ -1,11 +1,12 @@
 const mongoose = require("mongoose");
-const CommentSchema = new mongoose.Schema({
-  postId: {
+
+const MessageSchema = new mongoose.Schema({
+  conversationId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: "Post",
+    ref: "Conversation",
   },
 
-  userId: {
+  sender: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
   },
@@ -17,4 +18,5 @@ const CommentSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
-module.exports = mongoose.model("Comment", CommentSchema);
+
+module.exports = mongoose.model("Message", MessageSchema);

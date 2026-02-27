@@ -1,20 +1,33 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const bcrypt = require("bcryptjs");
 
-const Post = require("./models/post");
+const Post = require("./models/Post");
 const User = require("./models/user");
-const Comment = require("./models/Comment");
+const Comment = require("./models/comment");
 const Follow = require("./models/follow"); 
 const Connection = require("./models/Connection");
-
+const Like = require("./models/Like");
+const Notification = require("./models/Notification");
+const Conversation = require("./models/Conversation");
+const Message = require("./models/Message");
+const Report = require("./models/Report");
+const adminPostRoutes = require("./routes/adminPostRoutes");
+const adminStatsRoutes = require("./routes/adminStatsRoutes");
+const adminUserRoutes = require("./routes/adminUserRoutes");  
+const adminAnalyticsRoutes = require("./routes/adminAnalyticsRoutes");
 const app = express();
-
+const nodemailer=require("nodemailer");
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
+app.use("/report", require("./routes/reportRoutes"));
+app.use("/admin/reports", require("./routes/adminReportRoutes"));
+app.use("/admin/posts", adminPostRoutes);
+app.use("/admin/stats", adminStatsRoutes);
+app.use("/admin/users", adminUserRoutes);
+app.use("/admin/analytics", adminAnalyticsRoutes);
+let otpStore={};
 mongoose.connect("mongodb://127.0.0.1:27017/blogApp")
 .then(() => console.log("MongoDB Connected"))
 .catch(err => console.log(err));
@@ -56,9 +69,9 @@ app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
+
     // Check if user exists
     const user = await User.findOne({ email });
-
     if (!user) {
       return res.status(400).json({ message: "User not found" });
     }
@@ -105,22 +118,28 @@ app.put("/updateProfile/:id", async (req, res) => {
 });
 
 
-
 app.get("/profile/:id", async (req, res) => {
-  try {
 
-    const user = await User.findById(req.params.id).select("-password");
+  const user = await User.findById(req.params.id);
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+  const posts = await Post.find({
+    userId: req.params.id
+  }).sort({ createdAt: -1 });
 
-    res.json(user);
+  const followers = await Follow.countDocuments({
+    receiver: req.params.id,
+  });
 
-  } catch (error) {
-    console.log(error);
-    res.status(500).json({ message: "Server error" });
-  }
+  const following = await Follow.countDocuments({
+    sender: req.params.id,
+  });
+
+  res.json({
+    ...user.toObject(),
+    posts,
+    followers,
+    following
+  });
 });
 
 // GET Experiences
@@ -176,7 +195,8 @@ app.post("/createPost", async (req, res) => {
   try {
 
     const { userId, text, mediaUrl } = req.body;
-
+  const tags =
+    text.match(/#\w+/g)?.map(t => t.toLowerCase()) || [];
     const newPost = new Post({
       userId,
       text,
@@ -187,7 +207,20 @@ app.post("/createPost", async (req, res) => {
     await newPost.save();
 
     res.json(newPost);
+const followers = await Connection.find({
+  receiver: userId,
+  status: "accepted"
+});
 
+for (let f of followers) {
+  await Notification.create({
+    receiverId: f.sender,
+    senderId: userId,
+    postId: newPost._id,
+    type: "post",
+    message: "published a new post",
+  });
+}
   } catch (error) {
     console.log(error);
     res.status(500).json({ message: "Server error" });
@@ -297,21 +330,47 @@ app.post("/like", async (req, res) => {
 
     const { userId, postId } = req.body;
 
-    const newLike = new Like({
+    // check if already liked
+    const existing = await Like.findOne({
       userId,
-      postId
+      postId,
     });
 
-    await newLike.save();
+    if (existing) {
+      await Like.deleteOne({ _id: existing._id });
+    } else {
 
-    res.json(newLike);
+      // ⭐ LIKE CREATED
+      await Like.create({
+        userId,
+        postId,
+      });
+
+      // ⭐ ADD THIS PART HERE ↓↓↓
+      const post = await Post.findById(postId);
+
+      if (post.userId.toString() !== userId) {
+        await Notification.create({
+          receiverId: post.userId,
+          senderId: userId,
+          postId,
+          type: "like",
+          message: "liked your post",
+        });
+      }
+      // ⭐ END
+    }
+
+    const likesCount =
+      await Like.countDocuments({ postId });
+
+    res.json({ likesCount });
 
   } catch (error) {
+    console.log(error);
     res.status(500).json({ message: "Server error" });
   }
 });
-
-
 app.post("/connect", async (req, res) => {
   
   try {
@@ -516,7 +575,7 @@ app.get("/feed/:userId", async (req, res) => {
 
     const userId = req.params.userId;
 
-    // STEP 1 — Get all accepted connections
+    // STEP 1 — accepted connections
     const connections = await Connection.find({
       $or: [
         { sender: userId, status: "accepted" },
@@ -524,17 +583,15 @@ app.get("/feed/:userId", async (req, res) => {
       ]
     });
 
-    // STEP 2 — extract connected user IDs
+    
     const connectedIds = connections.map(c =>
       c.sender.toString() === userId
         ? c.receiver
         : c.sender
     );
 
-    // include user's own posts
     connectedIds.push(userId);
 
-    // STEP 3 — fetch posts from connected users
     const feedPosts = await Post.find({
       userId: { $in: connectedIds },
       isDraft: false
@@ -542,7 +599,339 @@ app.get("/feed/:userId", async (req, res) => {
       .populate("userId", "firstName lastName profileImage headline")
       .sort({ createdAt: -1 });
 
-    res.json(feedPosts);
+    const postsWithDetails = await Promise.all(
+
+      feedPosts.map(async (post) => {
+
+        const likes = await Like.countDocuments({
+          postId: post._id
+        });
+
+        const likedByMe = await Like.findOne({
+          postId: post._id,
+          userId: userId
+        });
+
+        const comments = await Comment.find({
+          postId: post._id
+        })
+          .populate("userId", "firstName lastName profileImage")
+          .sort({ createdAt: -1 });
+
+        return {
+          ...post.toObject(),
+          likesCount: likes,
+          isLiked: !!likedByMe,
+          comments
+        };
+      })
+    );
+
+    res.json(postsWithDetails);
+
+  } catch (error) {
+  console.log("FEED ERROR:", error);
+  res.status(500).json({ message: "Server error", error });
+}
+});
+app.post("/comment", async (req, res) => {
+  try {
+
+    const { userId, postId, text } = req.body;
+
+    const comment = await Comment.create({
+      userId,
+      postId,
+      text
+    });
+
+    const populated = await comment.populate(
+      "userId",
+      "firstName lastName profileImage"
+    );
+const post = await Post.findById(postId);
+
+if (post.userId.toString() !== userId) {
+  await Notification.create({
+    receiverId: post.userId,
+    senderId: userId,
+    postId,
+    type: "comment",
+    message: `commented: "${text}"`,
+  });
+}
+    res.json(populated);
+
+  } catch (error) {
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.get("/notifications/:userId", async (req, res) => {
+  try {
+
+    const notifications = await Notification.find({
+      receiverId: req.params.userId
+    })
+      .populate("senderId", "firstName lastName profileImage")
+      .sort({ createdAt: -1 });
+
+    res.json(notifications);
+
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.post("/conversation", async (req, res) => {
+
+  const { senderId, receiverId } = req.body;
+
+  let convo = await Conversation.findOne({
+    members: { $all: [senderId, receiverId] }
+  });
+
+  if (!convo) {
+    convo = await Conversation.create({
+      members: [senderId, receiverId]
+    });
+  }
+
+  res.json(convo);
+});
+
+app.post("/message", async (req, res) => {
+  try {
+
+    const { conversationId, sender, text } = req.body;
+
+    // ⭐ 1. create new message
+    const msg = await Message.create({
+      conversationId,
+      sender,
+      text,
+    });
+
+    // ⭐ 2. update conversation last message
+    await Conversation.findByIdAndUpdate(
+      conversationId,
+      { lastMessage: text }
+    );
+
+    // ⭐ 3. send response
+    res.json(msg);
+
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+app.get("/messages/:conversationId", async (req, res) => {
+
+  const messages = await Message.find({
+    conversationId: req.params.conversationId
+  })
+    .populate("sender", "firstName profileImage")
+    .sort({ createdAt: 1 });
+
+  res.json(messages);
+});
+
+app.get("/conversations/:userId", async (req, res) => {
+
+  const convos = await Conversation.find({
+    members: req.params.userId
+  }).populate("members", "firstName profileImage");
+
+  res.json(convos);
+});
+
+app.get("/updates/:userId", async (req, res) => {
+  try {
+
+    const userId = req.params.userId;
+
+    const newNotifications = await Notification.countDocuments({
+      receiverId: userId,
+      isRead: false
+    });
+
+    const newMessages = await Message.countDocuments({
+      receiver: userId,
+      isRead: false
+    });
+
+    const newNetwork = await Connection.countDocuments({
+      receiver: userId,
+      status: "pending"
+    });
+
+    // example logic for new posts
+    const newPosts = await Post.countDocuments({
+      createdAt: { $gte: new Date(Date.now() - 86400000) } // last 24h
+    });
+
+    res.json({
+      newPosts,
+      newMessages,
+      newNotifications,
+      newNetwork,
+    });
+
+  } catch (err) {
+    res.status(500).json({ message: "error" });
+  }
+});
+
+app.get("/search", async (req, res) => {
+  try {
+
+    const text = req.query.text || "";
+
+    const users = await User.find({
+      $or: [
+        { firstName: { $regex: text, $options: "i" } },
+        { lastName: { $regex: text, $options: "i" } },
+        { headline: { $regex: text, $options: "i" } }
+      ]
+    }).select("firstName lastName profileImage headline");
+
+    const posts = await Post.find({
+      text: { $regex: text, $options: "i" }
+    }).populate("userId","firstName lastName profileImage");
+
+    res.json({ users, posts });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.get("/relationship/:viewerId/:profileId", async (req, res) => {
+
+  const { viewerId, profileId } = req.params;
+
+  const connection = await Connection.findOne({
+    $or: [
+      { sender: viewerId, receiver: profileId },
+      { sender: profileId, receiver: viewerId }
+    ]
+  });
+
+  const follow = await Follow.findOne({
+    sender: viewerId,
+    receiver: profileId
+  });
+
+  if (connection?.status === "connected") {
+    return res.json({ type: "connected" });
+  }
+
+  if (follow) {
+    return res.json({ type: "following" });
+  }
+
+  res.json({ type: "none" });
+});
+
+app.post("/send-otp", async (req, res) => {
+  const { email } = req.body;
+
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+  otpStore[email] = {
+    otp,
+    expiresAt: Date.now() + 60000, // 60 seconds
+  };
+
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: "bca2427@rajagiri.edu",
+      pass: "mccg idfv pmud eozs",
+    },
+  });
+
+  await transporter.sendMail({
+    from: "bca2427@rajagiri.edu",
+    to: email,
+    subject: "Password Reset OTP",
+    text: `Your OTP is: ${otp}`,
+  });
+
+  res.json({ message: "OTP sent successfully" });
+});
+app.post("/verify-otp", (req, res) => {
+  const { email, otp } = req.body;
+
+  const record = otpStore[email];
+
+  if (!record) {
+    return res.status(400).json({ message: "No OTP found" });
+  }
+
+  if (Date.now() > record.expiresAt) {
+    return res.status(400).json({ message: "OTP expired" });
+  }
+
+  if (record.otp !== otp) {
+    return res.status(400).json({ message: "Invalid OTP" });
+  }
+
+  // ⭐ mark verified
+  otpStore[email].verified = true;
+
+  res.json({ success: true });
+});
+
+const bcrypt = require("bcryptjs");
+
+app.post("/reset-password", async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    const record = otpStore[email];
+
+    // ❌ block if OTP not verified
+    if (!record || !record.verified) {
+      return res.status(400).json({
+        message: "OTP verification required",
+      });
+    }
+
+    // ⭐ HASH PASSWORD
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // ⭐ UPDATE USER PASSWORD
+    await User.findOneAndUpdate(
+      { email },
+      { password: hashedPassword }
+    );
+
+    delete otpStore[email];
+
+    res.json({ message: "Password updated successfully" });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// EDIT POST
+app.put("/editPost/:id", async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    const updatedPost = await Post.findByIdAndUpdate(
+      req.params.id,
+      { text },
+      { new: true }
+    );
+
+    res.json(updatedPost);
 
   } catch (error) {
     console.log(error);

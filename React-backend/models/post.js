@@ -7,6 +7,7 @@ const PostSchema = new mongoose.Schema({
   },
 
   text: String,
+  tags: [String],
   mediaUrl: String,
 
   isDraft: {
