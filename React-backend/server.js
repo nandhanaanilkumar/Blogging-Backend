@@ -12,6 +12,7 @@ const Notification = require("./models/Notification");
 const Conversation = require("./models/Conversation");
 const Message = require("./models/Message");
 const Report = require("./models/Report");
+const Save = require("./models/Save");
 const adminPostRoutes = require("./routes/adminPostRoutes");
 const adminStatsRoutes = require("./routes/adminStatsRoutes");
 const adminUserRoutes = require("./routes/adminUserRoutes");  
@@ -240,11 +241,29 @@ app.get("/posts", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-app.delete("/post/:id", async (req, res) => {
+app.delete("/post/:id/:userId", async (req, res) => {
   try {
+
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({
+        message: "Post not found"
+      });
+    }
+
+    // ⭐ owner check
+    if (post.userId.toString() !== req.params.userId) {
+      return res.status(403).json({
+        message: "Not allowed"
+      });
+    }
+
     await Post.findByIdAndDelete(req.params.id);
-    res.json({ message: "Post deleted" });
-  } catch (error) {
+
+    res.json({ message: "Deleted successfully" });
+
+  } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -312,15 +331,43 @@ app.get("/userPosts/:userId", async (req, res) => {
 
     const posts = await Post.find({
       userId: req.params.userId,
-      isDraft: false   // show only published posts
+      isDraft: false,
     })
-      .populate("userId", "firstName lastName profileImage headline")
+      .populate("userId",
+        "firstName lastName profileImage headline")
       .sort({ createdAt: -1 });
 
-    res.json(posts);
+    const formatted = await Promise.all(
 
-  } catch (error) {
-    console.log(error);
+      posts.map(async (post) => {
+
+        const likesCount =
+          await Like.countDocuments({
+            postId: post._id
+          });
+
+        const commentsCount =
+          await Comment.countDocuments({
+            postId: post._id
+          });
+
+        const savesCount =
+          await Save.countDocuments({
+            postId: post._id
+          });
+
+        return {
+          ...post.toObject(),
+          likesCount,
+          commentsCount,
+          savesCount,
+        };
+      })
+    );
+
+    res.json(formatted);
+
+  } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -362,9 +409,12 @@ app.post("/like", async (req, res) => {
     }
 
     const likesCount =
-      await Like.countDocuments({ postId });
+  await Like.countDocuments({ postId });
 
-    res.json({ likesCount });
+res.json({
+  likesCount,
+  liked: !existing
+});
 
   } catch (error) {
     console.log(error);
@@ -747,6 +797,7 @@ app.get("/conversations/:userId", async (req, res) => {
   res.json(convos);
 });
 
+
 app.get("/updates/:userId", async (req, res) => {
   try {
 
@@ -802,6 +853,91 @@ app.get("/search", async (req, res) => {
     }).populate("userId","firstName lastName profileImage");
 
     res.json({ users, posts });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.get("/search/messages/:userId", async (req, res) => {
+  try {
+
+    const { userId } = req.params;
+    const text = req.query.text || "";
+
+    // ⭐ existing conversations
+    const conversations = await Conversation.find({
+      members: userId,
+    }).populate("members", "firstName lastName profileImage");
+
+    const matchedChats = conversations
+      .map(c => {
+
+        const other = c.members.find(
+          m => m._id.toString() !== userId
+        );
+
+        if (!other) return null;
+
+        const full =
+          `${other.firstName} ${other.lastName}`.toLowerCase();
+
+        if (!full.includes(text.toLowerCase())) return null;
+
+        return {
+          conversationId: c._id,
+          user: other,
+          lastMessage: c.lastMessage || "",
+          isConnected: true, // already chatting
+        };
+      })
+      .filter(Boolean);
+
+    // ⭐ users not chatted
+    const chattedIds = conversations.flatMap(c =>
+      c.members.map(m => m._id.toString())
+    );
+
+    const users = await User.find({
+      _id: { $nin: chattedIds },
+      $or: [
+        { firstName: { $regex: text, $options: "i" } },
+        { lastName: { $regex: text, $options: "i" } },
+      ],
+      role: { $ne: "admin" }
+    }).select("firstName lastName profileImage headline");
+
+    // ⭐ check connection status
+    const formattedUsers = await Promise.all(
+      users.map(async (u) => {
+
+        const connection = await Connection.findOne({
+          $or: [
+            {
+              sender: userId,
+              receiver: u._id,
+              status: "accepted",
+            },
+            {
+              sender: u._id,
+              receiver: userId,
+              status: "accepted",
+            },
+          ],
+        });
+
+        return {
+          ...u._doc,
+          isConnected: !!connection,
+        };
+      })
+    );
+
+    res.json({
+      chats: matchedChats,
+      users: formattedUsers,
+    });
 
   } catch (err) {
     console.log(err);
@@ -920,21 +1056,55 @@ app.post("/reset-password", async (req, res) => {
   }
 });
 
-// EDIT POST
 app.put("/editPost/:id", async (req, res) => {
   try {
-    const { text } = req.body;
 
-    const updatedPost = await Post.findByIdAndUpdate(
+    const { text, mediaUrl } = req.body;
+
+    const updated = await Post.findByIdAndUpdate(
       req.params.id,
-      { text },
+      {
+        text,
+        mediaUrl,
+      },
       { new: true }
     );
 
-    res.json(updatedPost);
+    res.json(updated);
 
-  } catch (error) {
-    console.log(error);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+app.post("/save", async (req, res) => {
+  try {
+
+    const { userId, postId } = req.body;
+
+    const existing = await Save.findOne({
+      userId,
+      postId,
+    });
+
+    if (existing) {
+      await Save.deleteOne({ _id: existing._id });
+    } else {
+      await Save.create({
+        userId,
+        postId,
+      });
+    }
+
+    const savesCount =
+      await Save.countDocuments({ postId });
+
+    res.json({
+      savesCount,
+      saved: !existing,
+    });
+
+  } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 });
