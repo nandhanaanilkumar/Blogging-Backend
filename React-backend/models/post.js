@@ -14,11 +14,33 @@ const PostSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+isDeleted: {
+      type: Boolean,
+      default: false,
+    },
 
-  createdAt: {
-    type: Date,
-    default: Date.now
+    isHidden: {
+      type: Boolean,
+      default: false,
+    },
+
+    reports: {
+      type: Number,
+      default: 0,
+    },
+
+    warningCount: {
+      type: Number,
+      default: 0,
+    },
+    impressions: {
+  type: Number,
+  default: 0,
+}
+},
+ {
+    timestamps: true, // ⭐ IMPORTANT
   }
-});
+);
 
 module.exports = mongoose.model("Post", PostSchema);

@@ -2,7 +2,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 
-const Post = require("./models/Post");
+const Post = require("./models/post");
 const User = require("./models/user");
 const Comment = require("./models/comment");
 const Follow = require("./models/follow"); 
@@ -16,7 +16,9 @@ const Save = require("./models/Save");
 const adminPostRoutes = require("./routes/adminPostRoutes");
 const adminStatsRoutes = require("./routes/adminStatsRoutes");
 const adminUserRoutes = require("./routes/adminUserRoutes");  
-const adminAnalyticsRoutes = require("./routes/adminAnalyticsRoutes");
+const adminRoutes = require("./routes/admin");
+const profileRoutes = require("./routes/profile");
+const ProfileView = require("./models/ProfileView");
 const app = express();
 const nodemailer=require("nodemailer");
 app.use(cors());
@@ -27,7 +29,8 @@ app.use("/admin/reports", require("./routes/adminReportRoutes"));
 app.use("/admin/posts", adminPostRoutes);
 app.use("/admin/stats", adminStatsRoutes);
 app.use("/admin/users", adminUserRoutes);
-app.use("/admin/analytics", adminAnalyticsRoutes);
+app.use("/admin", adminRoutes);
+app.use("/", profileRoutes);
 let otpStore={};
 mongoose.connect("mongodb://127.0.0.1:27017/blogApp")
 .then(() => console.log("MongoDB Connected"))
@@ -231,9 +234,12 @@ for (let f of followers) {
 app.get("/posts", async (req, res) => {
   try {
 
-    const posts = await Post.find()
+    const posts = await Post.find({
+     isDeleted: { $ne: true },
+  isHidden: { $ne: true },
+    })
       .populate("userId", "firstName lastName profileImage headline")
-      .sort({ createdAt: -1 });
+      .sort({ updatedAt: -1 });
 
     res.json(posts);
 
@@ -332,6 +338,8 @@ app.get("/userPosts/:userId", async (req, res) => {
     const posts = await Post.find({
       userId: req.params.userId,
       isDraft: false,
+      isDeleted: { $ne: true }, // ⭐ ADD
+  isHidden: { $ne: true }, 
     })
       .populate("userId",
         "firstName lastName profileImage headline")
@@ -643,11 +651,13 @@ app.get("/feed/:userId", async (req, res) => {
     connectedIds.push(userId);
 
     const feedPosts = await Post.find({
-      userId: { $in: connectedIds },
-      isDraft: false
-    })
-      .populate("userId", "firstName lastName profileImage headline")
-      .sort({ createdAt: -1 });
+  userId: { $in: connectedIds },
+  isDraft: false,
+  isDeleted: { $ne: true }, 
+  isHidden: { $ne: true },  
+})
+  .populate("userId", "firstName lastName profileImage headline")
+  .sort({ createdAt: -1 });
 
     const postsWithDetails = await Promise.all(
 
@@ -979,14 +989,14 @@ app.post("/send-otp", async (req, res) => {
 
   otpStore[email] = {
     otp,
-    expiresAt: Date.now() + 60000, // 60 seconds
+    expiresAt: Date.now() + 3 * 60 *1000, // 60 seconds
   };
 
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: {
       user: "bca2427@rajagiri.edu",
-      pass: "mccg idfv pmud eozs",
+      pass: "fjjb atbn ithq qufa",
     },
   });
 
@@ -1012,7 +1022,7 @@ app.post("/verify-otp", (req, res) => {
     return res.status(400).json({ message: "OTP expired" });
   }
 
-  if (record.otp !== otp) {
+  if (record.otp != otp) {
     return res.status(400).json({ message: "Invalid OTP" });
   }
 
@@ -1108,4 +1118,54 @@ app.post("/save", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+app.get("/user-analytics/:userId", async (req, res) => {
+  try {
+
+    const userId = req.params.userId;
+
+    // PROFILE VIEWS
+    const profileViews =
+      await ProfileView.countDocuments({
+        profileId: userId,
+      });
+
+    // TOTAL POST LIKES
+    const userPosts = await Post.find({ userId });
+
+    const postIds = userPosts.map(p => p._id);
+
+    const postLikes = await Like.countDocuments({
+      postId: { $in: postIds },
+    });
+
+    // FOLLOWERS
+    const newFollowers = await Connection.countDocuments({
+      receiver: userId,
+      status: "accepted",
+    });
+
+    // PROFILE REACH (example logic)
+    const profileReach = profileViews + postLikes;
+
+    // Engagement %
+    const engagement =
+      profileReach > 0
+        ? ((postLikes / profileReach) * 100).toFixed(1)
+        : 0;
+
+    res.json({
+      profileViews,
+      postLikes,
+      newFollowers,
+      profileReach,
+      engagement,
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 app.listen(5000, () => console.log("Server running on port 5000"));
