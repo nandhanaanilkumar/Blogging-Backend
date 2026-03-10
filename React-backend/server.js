@@ -324,11 +324,28 @@ app.put("/publish/:id", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-app.delete("/draft/:id", async (req, res) => {
+app.post("/draft", async (req, res) => {
   try {
-    await Post.findByIdAndDelete(req.params.id);
-    res.json({ message: "Draft deleted" });
+
+    const { userId, text, mediaUrl } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ message: "User ID required" });
+    }
+
+    const draft = new Post({
+      userId,
+      text,
+      mediaUrl,
+      isDraft: true
+    });
+
+    await draft.save();
+
+    res.json(draft);
+
   } catch (error) {
+    console.log("Draft error:", error);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -1164,6 +1181,23 @@ app.get("/user-analytics/:userId", async (req, res) => {
 
   } catch (err) {
     console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+app.get("/draft/:id", async (req, res) => {
+  try {
+
+    const draft = await Post.findById(req.params.id);
+
+    if (!draft) {
+      return res.status(404).json({ message: "Draft not found" });
+    }
+
+    res.json(draft);
+
+  } catch (error) {
+    console.log(error);
     res.status(500).json({ message: "Server error" });
   }
 });

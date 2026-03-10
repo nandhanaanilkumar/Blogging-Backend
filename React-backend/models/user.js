@@ -9,6 +9,8 @@ const UserSchema = new mongoose.Schema({
   education: String,
   bio: String,
   profileImage: String,
+   backgroundImage: String, 
+
   skills: [String],
   experiences: [
     {
