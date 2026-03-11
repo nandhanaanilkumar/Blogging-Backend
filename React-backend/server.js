@@ -447,14 +447,16 @@ res.json({
   }
 });
 app.post("/connect", async (req, res) => {
-  
   try {
 
     const { senderId, receiverId } = req.body;
 
+    // Prevent duplicate requests in both directions
     const existing = await Connection.findOne({
-      sender: senderId,
-      receiver: receiverId
+      $or: [
+        { sender: senderId, receiver: receiverId },
+        { sender: receiverId, receiver: senderId }
+      ]
     });
 
     if (existing) {
@@ -463,14 +465,24 @@ app.post("/connect", async (req, res) => {
 
     const newConnection = new Connection({
       sender: senderId,
-      receiver: receiverId
+      receiver: receiverId,
+      status: "pending"
     });
 
     await newConnection.save();
 
+    // ⭐ CREATE NOTIFICATION
+    await Notification.create({
+      receiverId: receiverId,
+      senderId: senderId,
+      type: "connection",
+      message: "sent you a connection request"
+    });
+
     res.json(newConnection);
 
   } catch (error) {
+    console.log(error);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -502,9 +514,21 @@ app.put("/accept/:id", async (req, res) => {
       { new: true }
     );
 
+    console.log("Connection accepted:", connection);
+
+    const notification = await Notification.create({
+      receiverId: connection.sender,
+      senderId: connection.receiver,
+      type: "connection",
+      message: "accepted your connection request"
+    });
+
+    console.log("Notification created:", notification);
+
     res.json(connection);
 
   } catch (error) {
+    console.log(error);
     res.status(500).json({ message: "Server error" });
   }
 });
@@ -573,7 +597,7 @@ app.get("/people/:userId", async (req, res) => {
     const people = await User.find({
   _id: { $nin: excludedIds },
   role: { $ne: "admin" }   
-}).select("firstName lastName headline profileImage role");
+}).select("firstName lastName headline profileImage backgroundImage role");
 
 
 
@@ -983,17 +1007,16 @@ app.get("/relationship/:viewerId/:profileId", async (req, res) => {
     ]
   });
 
-  const follow = await Follow.findOne({
-    sender: viewerId,
-    receiver: profileId
-  });
-
-  if (connection?.status === "connected") {
+  if (connection?.status === "accepted") {
     return res.json({ type: "connected" });
   }
 
-  if (follow) {
-    return res.json({ type: "following" });
+  if (connection?.status === "pending") {
+    if (connection.sender.toString() === viewerId) {
+      return res.json({ type: "pending_sent" });
+    } else {
+      return res.json({ type: "pending_received" });
+    }
   }
 
   res.json({ type: "none" });

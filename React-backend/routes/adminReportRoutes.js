@@ -4,7 +4,8 @@ const router = express.Router();
 const Report = require("../models/Report");
 const Post = require("../models/post");
 const Comment = require("../models/comment");
-
+const Like = require("../models/Like");
+const Save = require("../models/Save");
 // GET REPORTED POSTS (FULL DATA)
 router.get("/posts", async (req, res) => {
   try {
@@ -21,6 +22,94 @@ router.get("/posts", async (req, res) => {
     }).populate("userId", "firstName lastName profileImage");
 
     res.json(posts);
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+router.delete("/posts/delete/:id", async (req, res) => {
+  try {
+
+    const postId = req.params.id;
+
+    // 1️⃣ delete post
+    await Post.findByIdAndDelete(postId);
+
+    // 2️⃣ delete related likes
+    await Like.deleteMany({ postId });
+
+    // 3️⃣ delete related comments
+    await Comment.deleteMany({ postId });
+
+    // 4️⃣ delete saves
+    await Save.deleteMany({ postId });
+
+    // 5️⃣ resolve reports
+    await Report.updateMany(
+      {
+        type: "post",
+        targetId: String(postId)
+      },
+      { status: "Resolved" }
+    );
+
+    res.json({
+      message: "Post deleted from platform"
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+router.put("/posts/hide/:id", async (req, res) => {
+  try {
+
+    const post = await Post.findByIdAndUpdate(
+      req.params.id,
+      { isHidden: true },
+      { new: true }
+    );
+
+    await Report.updateMany(
+      {
+        type: "post",
+        targetId: String(req.params.id)
+      },
+      {
+        status: "Resolved"
+      }
+    );
+
+    res.json({
+      message: "Post hidden successfully",
+      post
+    });
+
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+router.put("/posts/toggle-hide/:id", async (req, res) => {
+  try {
+
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({ message: "Post not found" });
+    }
+
+    // toggle hide status
+    post.isHidden = !post.isHidden;
+
+    await post.save();
+
+    res.json({
+      message: post.isHidden ? "Post hidden" : "Post unhidden",
+      post
+    });
 
   } catch (err) {
     console.log(err);
