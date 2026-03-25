@@ -31,6 +31,7 @@ app.use("/admin/stats", adminStatsRoutes);
 app.use("/admin/users", adminUserRoutes);
 app.use("/admin", adminRoutes);
 app.use("/", profileRoutes);
+app.use("/uploads", express.static("uploads"));
 let otpStore={};
 mongoose.connect("mongodb://127.0.0.1:27017/blogApp")
 .then(() => console.log("MongoDB Connected"))
@@ -1158,7 +1159,44 @@ app.post("/save", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+app.get("/saved/:userId", async (req, res) => {
+  try {
+    const saves = await Save.find({
+      userId: req.params.userId,
+    }).populate({
+      path: "postId",
+      populate: {
+        path: "userId",
+        select: "firstName lastName profileImage",
+      },
+    });
 
+   const posts = saves.map(s => {
+  const post = s.postId.toObject();
+
+  // ✅ Normalize media URL
+  if (post.mediaUrl) {
+    // remove localhost if already present
+    post.mediaUrl = post.mediaUrl.replace(
+      "http://localhost:5000",
+      ""
+    );
+
+    // ensure starts with /
+    if (!post.mediaUrl.startsWith("/")) {
+      post.mediaUrl = "/" + post.mediaUrl;
+    }
+  }
+
+  return post;
+});
+    res.json(posts);
+
+  } catch (err) {
+    console.log("Saved fetch error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
 app.get("/user-analytics/:userId", async (req, res) => {
   try {
 
